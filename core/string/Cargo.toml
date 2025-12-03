@@ -1,0 +1,25 @@
+[package]
+name = "fiber_string"
+keywords = ["javascript", "js", "string"]
+categories = ["parser-implementations", "compilers"]
+readme = "../../README.md"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+static_assertions.workspace = true
+rustc-hash = { workspace = true, features = ["std"] }
+paste.workspace = true
+itoa.workspace = true
+ryu-js.workspace = true
+fast-float2.workspace = true
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

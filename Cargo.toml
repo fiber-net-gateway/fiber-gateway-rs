@@ -16,3 +16,69 @@ description = "A gateway framework"
 
 # Repo Crates
 fiber_json = { version = "~0.1.0", path = "core/json" }
+fiber_string = { version = "~0.1.0", path = "core/string" }
+
+indexmap = "2.2.6"
+static_assertions = "1.1.0"
+rustc-hash = { version = "2.1.1", default-features = false }
+paste = "1.0"
+ryu-js = "1.0.2"
+itoa = "1.0.15"
+fast-float2 = "0.2.3"
+
+
+[workspace.lints.rust]
+# rustc lint groups https://doc.rust-lang.org/rustc/lints/groups.html
+warnings = "warn"
+future_incompatible = { level = "warn", priority = -1 }
+let_underscore = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+rust_2018_compatibility = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2021_compatibility = { level = "warn", priority = -1 }
+unused = { level = "warn", priority = -1 }
+
+# rustc allowed-by-default lints https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
+missing_docs = "warn"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_abi = "warn"
+missing_copy_implementations = "warn"
+missing_debug_implementations = "warn"
+non_ascii_idents = "warn"
+noop_method_call = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_crate_dependencies = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+variant_size_differences = "warn"
+
+[workspace.lints.rustdoc]
+# rustdoc lints https://doc.rust-lang.org/rustdoc/lints.html
+broken_intra_doc_links = "warn"
+private_intra_doc_links = "warn"
+missing_crate_level_docs = "warn"
+private_doc_tests = "warn"
+invalid_codeblock_attributes = "warn"
+invalid_rust_codeblocks = "warn"
+bare_urls = "warn"
+
+[workspace.lints.clippy]
+# clippy allowed by default
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+# clippy categories https://doc.rust-lang.org/clippy/
+all = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
