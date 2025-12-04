@@ -25,6 +25,7 @@ paste = "1.0"
 ryu-js = "1.0.2"
 itoa = "1.0.15"
 fast-float2 = "0.2.3"
+base64 = "0.22.1"
 
 
 [workspace.lints.rust]

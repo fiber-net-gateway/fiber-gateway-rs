@@ -1,13 +1,37 @@
 use fiber_string::JsString;
 use indexmap::IndexMap;
-use std::rc::Rc;
 use std::str;
 
-use crate::types::{JsonError, JsValue};
+use crate::parser_chars::CharParser;
+use crate::types::{JsArray, JsObject, JsValue, JsonError};
 
 /// Parse a JSON string into a `JsValue` tree.
 pub fn parse(input: &str) -> Result<JsValue, JsonError> {
     Parser::new(input).parse()
+}
+
+/// Parse JSON from UTF-8 bytes.
+pub fn parse_bytes(bytes: &[u8]) -> Result<JsValue, JsonError> {
+    let s = std::str::from_utf8(bytes).map_err(|_| JsonError {
+        offset: 0,
+        message: "input is not valid UTF-8".to_string(),
+    })?;
+    parse(s)
+}
+
+/// Parse JSON from a slice of characters.
+pub fn parse_chars(chars: &[char]) -> Result<JsValue, JsonError> {
+    CharParser::new(chars).parse()
+}
+
+/// Parse JSON from a `JsString`.
+pub fn parse_js_string(input: &JsString) -> Result<JsValue, JsonError> {
+    let chars: Vec<char> = input
+        .as_str()
+        .code_points()
+        .filter_map(|cp| cp.as_char())
+        .collect();
+    parse_chars(&chars)
 }
 
 struct Parser<'a> {
@@ -60,12 +84,30 @@ impl<'a> Parser<'a> {
         self.consume(b'"')?;
         let mut out = String::new();
 
-        while let Some(ch) = self.next() {
+        while let Some(ch) = self.peek() {
             match ch {
-                b'"' => return Ok(out),
-                b'\\' => out.push(self.parse_escape()?),
-                0x00..=0x1F => return Err(self.error("control characters not allowed in strings")),
-                _ => out.push(ch as char),
+                b'"' => {
+                    self.pos += 1;
+                    return Ok(out);
+                }
+                b'\\' => {
+                    self.pos += 1;
+                    out.push(self.parse_escape()?);
+                }
+                0x00..=0x1F => {
+                    return Err(self.error("control characters not allowed in strings"));
+                }
+                b if b < 0x80 => {
+                    self.pos += 1;
+                    out.push(b as char);
+                }
+                _ => {
+                    // Decode the next UTF-8 scalar from the source.
+                    let ch = self
+                        .next_char()
+                        .ok_or_else(|| self.error("unterminated string"))?;
+                    out.push(ch);
+                }
             }
         }
 
@@ -95,7 +137,9 @@ impl<'a> Parser<'a> {
     fn parse_hex_code(&mut self) -> Result<u32, JsonError> {
         let mut code = 0u32;
         for _ in 0..4 {
-            let digit = self.next().ok_or_else(|| self.error("incomplete unicode escape"))?;
+            let digit = self
+                .next()
+                .ok_or_else(|| self.error("incomplete unicode escape"))?;
             let value = match digit {
                 b'0'..=b'9' => (digit - b'0') as u32,
                 b'a'..=b'f' => (digit - b'a' + 10) as u32,
@@ -181,7 +225,8 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         if self.peek() == Some(b']') {
             self.pos += 1;
-            return Ok(JsValue::Array(Rc::new(items)));
+            let array = JsArray::new(items);
+            return Ok(JsValue::Array(array));
         }
 
         loop {
@@ -201,7 +246,8 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(JsValue::Array(Rc::new(items)))
+        let array = JsArray::new(items);
+        Ok(JsValue::Array(array))
     }
 
     fn parse_object(&mut self) -> Result<JsValue, JsonError> {
@@ -210,7 +256,8 @@ impl<'a> Parser<'a> {
         let mut map = IndexMap::new();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            return Ok(JsValue::Object(Rc::new(map)));
+            let object = JsObject::new(map);
+            return Ok(JsValue::Object(object));
         }
 
         loop {
@@ -233,7 +280,8 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(JsValue::Object(Rc::new(map)))
+        let object = JsObject::new(map);
+        Ok(JsValue::Object(object))
     }
 
     fn skip_ws(&mut self) {
@@ -263,6 +311,14 @@ impl<'a> Parser<'a> {
         self.src.get(self.pos).copied()
     }
 
+    fn next_char(&mut self) -> Option<char> {
+        let slice = self.src.get(self.pos..)?;
+        let rest = str::from_utf8(slice).expect("parser only consumes valid UTF-8");
+        let ch = rest.chars().next()?;
+        self.pos += ch.len_utf8();
+        Some(ch)
+    }
+
     fn error(&self, message: &str) -> JsonError {
         JsonError {
             offset: self.pos,
@@ -274,15 +330,13 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::JsObject;
-    use std::rc::Rc;
 
     fn s(val: &str) -> JsValue {
         JsValue::String(JsString::from(val))
     }
 
     fn arr(items: Vec<JsValue>) -> JsValue {
-        JsValue::Array(Rc::new(items))
+        JsValue::Array(JsArray::new(items))
     }
 
     fn obj(map: JsObject) -> JsValue {
@@ -295,10 +349,7 @@ mod tests {
         assert_eq!(parse("true").unwrap(), JsValue::Bool(true));
         assert_eq!(parse("false").unwrap(), JsValue::Bool(false));
         assert_eq!(parse("42").unwrap(), JsValue::Int(42));
-        assert_eq!(
-            parse("\"hello\"").unwrap(),
-            s("hello")
-        );
+        assert_eq!(parse("\"hello\"").unwrap(), s("hello"));
     }
 
     #[test]
@@ -306,11 +357,11 @@ mod tests {
         let value = parse(r#"[1, {"a": 2, "b": [true, null]}]"#).unwrap();
         let mut inner = IndexMap::new();
         inner.insert(JsString::from("a"), JsValue::Int(2));
-        inner.insert(JsString::from("b"), arr(vec![JsValue::Bool(true), JsValue::Null]));
-        let expected = arr(vec![
-            JsValue::Int(1),
-            obj(Rc::new(inner)),
-        ]);
+        inner.insert(
+            JsString::from("b"),
+            arr(vec![JsValue::Bool(true), JsValue::Null]),
+        );
+        let expected = arr(vec![JsValue::Int(1), obj(JsObject::new(inner))]);
         assert_eq!(value, expected);
     }
 
@@ -341,5 +392,14 @@ mod tests {
         let decimal = "-0.123e10";
         let value = parse(decimal).unwrap();
         assert!(matches!(value, JsValue::Float(_)));
+    }
+
+    #[test]
+    fn parses_from_chars_slice() {
+        let chars: Vec<char> = "[1,2]".chars().collect();
+        assert_eq!(
+            parse_chars(&chars).unwrap(),
+            JsValue::Array(JsArray::new(vec![JsValue::Int(1), JsValue::Int(2)]))
+        );
     }
 }
