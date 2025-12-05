@@ -6,7 +6,7 @@ members = ["core/*"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-rust-version = "1.91.0"
+rust-version = "1.89.0"
 authors = ["zhwaaaaaa"]
 repository = "https://github.com/fiber-net-gateway/fiber-gateway"
 license = "Unlicense OR MIT"
@@ -83,3 +83,7 @@ style = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
 perf = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+
+[patch.crates-io]
+criterion = { path = "vendor/criterion" }
+serde_json = { path = "vendor/serde_json" }

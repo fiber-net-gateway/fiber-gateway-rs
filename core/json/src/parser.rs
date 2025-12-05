@@ -1,9 +1,8 @@
 use fiber_string::JsString;
-use indexmap::IndexMap;
 use std::str;
 
 use crate::parser_chars::CharParser;
-use crate::types::{JsArray, JsObject, JsValue, JsonError};
+use crate::types::{JsArray, JsMap, JsObject, JsValue, JsonError};
 
 /// Parse a JSON string into a `JsValue` tree.
 pub fn parse(input: &str) -> Result<JsValue, JsonError> {
@@ -82,7 +81,9 @@ impl<'a> Parser<'a> {
 
     fn parse_string(&mut self) -> Result<String, JsonError> {
         self.consume(b'"')?;
-        let mut out = String::new();
+        let ahead = self.src.get(self.pos..).unwrap_or_default();
+        let reserve = ahead.iter().position(|&b| b == b'"').unwrap_or(0);
+        let mut out = String::with_capacity(reserve);
 
         while let Some(ch) = self.peek() {
             match ch {
@@ -153,11 +154,17 @@ impl<'a> Parser<'a> {
 
     fn parse_number(&mut self) -> Result<JsValue, JsonError> {
         let start = self.pos;
-        if self.peek() == Some(b'-') {
+        let negative = if self.peek() == Some(b'-') {
             self.pos += 1;
-        }
+            true
+        } else {
+            false
+        };
 
         let mut is_decimal = false;
+        let mut int_value: i64 = 0;
+        let mut int_overflow = false;
+
         match self.peek() {
             Some(b'0') => {
                 self.pos += 1;
@@ -166,9 +173,22 @@ impl<'a> Parser<'a> {
                 }
             }
             Some(b'1'..=b'9') => {
-                self.pos += 1;
-                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                let first = self.next().expect("peeked digit must exist");
+                int_value = (first - b'0') as i64;
+
+                while let Some(d @ b'0'..=b'9') = self.peek() {
                     self.pos += 1;
+                    if !int_overflow {
+                        let digit = (d - b'0') as i64;
+                        int_overflow =
+                            match int_value.checked_mul(10).and_then(|v| v.checked_add(digit)) {
+                                Some(v) => {
+                                    int_value = v;
+                                    false
+                                }
+                                None => true,
+                            };
+                    }
                 }
             }
             _ => return Err(self.error("invalid number")),
@@ -205,18 +225,24 @@ impl<'a> Parser<'a> {
 
         let slice = &self.src[start..self.pos];
         let s = str::from_utf8(slice).expect("parser only consumes valid UTF-8");
-        if is_decimal {
+        if is_decimal || int_overflow {
             let value: f64 = s.parse().map_err(|_| self.error("invalid number"))?;
             return Ok(JsValue::Float(value));
         }
 
-        match s.parse::<i64>() {
-            Ok(int) => Ok(JsValue::Int(int)),
-            Err(_) => {
-                let value: f64 = s.parse().map_err(|_| self.error("invalid number"))?;
-                Ok(JsValue::Float(value))
+        let int_value = if negative {
+            match int_value.checked_neg() {
+                Some(v) => v,
+                None => {
+                    let value: f64 = s.parse().map_err(|_| self.error("invalid number"))?;
+                    return Ok(JsValue::Float(value));
+                }
             }
-        }
+        } else {
+            int_value
+        };
+
+        Ok(JsValue::Int(int_value))
     }
 
     fn parse_array(&mut self) -> Result<JsValue, JsonError> {
@@ -253,7 +279,25 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self) -> Result<JsValue, JsonError> {
         self.consume(b'{')?;
         self.skip_ws();
-        let mut map = IndexMap::new();
+        let mut capacity = 0;
+        let mut in_string = false;
+        let mut escaped = false;
+        for &b in self.src.get(self.pos..).unwrap_or_default() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match b {
+                b'\\' if in_string => {
+                    escaped = true;
+                }
+                b'"' => in_string = !in_string,
+                b':' if !in_string => capacity += 1,
+                b'}' if !in_string => break,
+                _ => {}
+            }
+        }
+        let mut map = JsMap::with_capacity_and_hasher(capacity, Default::default());
         if self.peek() == Some(b'}') {
             self.pos += 1;
             let object = JsObject::new(map);
@@ -330,6 +374,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::JsMap;
 
     fn s(val: &str) -> JsValue {
         JsValue::String(JsString::from(val))
@@ -355,7 +400,7 @@ mod tests {
     #[test]
     fn parses_arrays_and_objects() {
         let value = parse(r#"[1, {"a": 2, "b": [true, null]}]"#).unwrap();
-        let mut inner = IndexMap::new();
+        let mut inner = JsMap::with_capacity_and_hasher(2, Default::default());
         inner.insert(JsString::from("a"), JsValue::Int(2));
         inner.insert(
             JsString::from("b"),

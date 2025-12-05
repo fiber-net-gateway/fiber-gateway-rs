@@ -1,6 +1,5 @@
-use crate::types::{JsArray, JsObject, JsValue, JsonError};
+use crate::types::{JsArray, JsMap, JsObject, JsValue, JsonError};
 use fiber_string::JsString;
-use indexmap::IndexMap;
 use std::fmt;
 
 pub(crate) struct CharParser<'a> {
@@ -223,7 +222,7 @@ impl<'a> CharParser<'a> {
     fn parse_object(&mut self) -> Result<JsValue, JsonError> {
         self.consume('{')?;
         self.skip_ws();
-        let mut map = IndexMap::new();
+        let mut map = JsMap::with_capacity_and_hasher(4, Default::default());
         if self.peek() == Some('}') {
             self.pos += 1;
             let object = JsObject::new(map);
