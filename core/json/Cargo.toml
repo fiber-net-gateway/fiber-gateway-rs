@@ -6,6 +6,6 @@ edition = "2024"
 [dependencies]
 fiber_string.workspace = true
 indexmap.workspace = true
-itoa.workspace = true
-ryu-js.workspace = true
 base64.workspace = true
+serde_json.workspace = true
+serde.workspace = true

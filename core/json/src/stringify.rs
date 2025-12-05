@@ -1,121 +1,147 @@
-use crate::types::{JsArray, JsBinary, JsObject, JsValue};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use fiber_string::{CodePoint, JsString};
-use itoa::Buffer as ItoaBuffer;
-use ryu_js::Buffer as RyuBuffer;
-use std::fmt::Write;
+use crate::types::{JsValue, JsonError};
+use fiber_string::{CommonJsStringBuilder, JsString};
+use std::io::{self, Write};
 
 /// Convert a `JsValue` into its JSON string representation.
 ///
 /// `Undefined` is treated the same as `Null`.
-pub fn stringify(value: &JsValue) -> String {
-    let mut out = String::new();
-    write_value(value, &mut out);
-    out
+pub fn stringify(value: &JsValue) -> Result<String, JsonError> {
+    serde_json::to_string(value).map_err(|err| JsonError {
+        offset: 0,
+        message: err.to_string(),
+    })
 }
 
-fn write_value(value: &JsValue, out: &mut String) {
-    match value {
-        JsValue::Undefined | JsValue::Null => out.push_str("null"),
-        JsValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        JsValue::Int(i) => {
-            let mut buf = ItoaBuffer::new();
-            out.push_str(buf.format(*i));
+/// Convert a `JsValue` into a `JsString`, emitting Latin-1 when possible and
+/// upgrading to UTF-16 only when necessary. This is powered by a streaming
+/// `io::Write` adapter that consumes UTF-8 output from `serde_json` and
+/// incrementally builds the `JsString`.
+pub fn stringify_js_string(value: &JsValue) -> Result<JsString, JsonError> {
+    let mut writer = JsStringWriter::new();
+    serde_json::to_writer(&mut writer, value).map_err(|err| JsonError {
+        offset: 0,
+        message: err.to_string(),
+    })?;
+    writer.finish()
+}
+
+struct JsStringWriter {
+    pending: Vec<u8>,
+    builder: CommonJsStringBuilder<'static>,
+}
+
+impl JsStringWriter {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            builder: CommonJsStringBuilder::new(),
         }
-        JsValue::Float(f) => {
-            if f.is_finite() {
-                let mut buf = RyuBuffer::new();
-                out.push_str(buf.format_finite(*f));
+    }
+
+    fn process_str(&mut self, s: &str) {
+        for ch in s.chars() {
+            if ch.is_ascii() {
+                self.builder.push(ch as u8);
             } else {
-                out.push_str("null");
+                self.builder.push(ch);
             }
         }
-        JsValue::Binary(bytes) => write_binary(bytes, out),
-        JsValue::String(s) => write_string(s, out),
-        JsValue::Array(array) => write_array(array, out),
-        JsValue::Object(object) => write_object(object, out),
     }
-}
 
-fn write_array(array: &JsArray, out: &mut String) {
-    let items = array.borrow();
-    out.push('[');
-    for (idx, item) in items.iter().enumerate() {
-        if idx > 0 {
-            out.push(',');
+    fn flush_pending(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
         }
-        write_value(item, out);
-    }
-    out.push(']');
-}
 
-fn write_object(object: &JsObject, out: &mut String) {
-    let entries = object.borrow();
-    out.push('{');
-    for (idx, (key, value)) in entries.iter().enumerate() {
-        if idx > 0 {
-            out.push(',');
+        let mut pending = std::mem::take(&mut self.pending);
+
+        match std::str::from_utf8(&pending) {
+            Ok(valid) => {
+                self.process_str(valid);
+                pending.clear();
+                self.pending = pending;
+                Ok(())
+            }
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "serializer emitted invalid utf-8",
+            )),
         }
-        write_string(key, out);
-        out.push(':');
-        write_value(value, out);
     }
-    out.push('}');
+
+    fn finish(mut self) -> Result<JsString, JsonError> {
+        self.flush_pending().map_err(|err| JsonError {
+            offset: 0,
+            message: err.to_string(),
+        })?;
+        Ok(self.builder.build())
+    }
 }
 
-fn write_binary(value: &JsBinary, out: &mut String) {
-    out.push('"');
-    let encoded = BASE64.encode(value.as_slice());
-    out.push_str(&encoded);
-    out.push('"');
-}
+impl Write for JsStringWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.pending.extend_from_slice(buf);
+        let mut pending = std::mem::take(&mut self.pending);
 
-fn write_string(value: &JsString, out: &mut String) {
-    out.push('"');
-    for cp in value.as_str().code_points() {
-        match cp {
-            CodePoint::Unicode(c) => match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\u{08}' => out.push_str("\\b"),
-                '\u{0C}' => out.push_str("\\f"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if c <= '\u{1F}' => {
-                    let _ = write!(out, "\\u{:04X}", c as u32);
+        loop {
+            match std::str::from_utf8(&pending) {
+                Ok(valid) => {
+                    self.process_str(valid);
+                    pending.clear();
+                    self.pending = pending;
+                    return Ok(buf.len());
                 }
-                c => out.push(c),
-            },
-            CodePoint::UnpairedSurrogate(surr) => {
-                let _ = write!(out, "\\u{:04X}", surr);
+                Err(err) => {
+                    let valid_up_to = err.valid_up_to();
+                    if valid_up_to > 0 {
+                        let valid = std::str::from_utf8(&pending[..valid_up_to])
+                            .expect("valid prefix must be UTF-8");
+                        self.process_str(valid);
+                        pending.drain(..valid_up_to);
+                    }
+
+                    if err.error_len().is_some() {
+                        self.pending = pending;
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "serializer emitted invalid utf-8",
+                        ));
+                    }
+
+                    // Incomplete sequence: wait for more bytes in the next call.
+                    self.pending = pending;
+                    return Ok(buf.len());
+                }
             }
         }
     }
-    out.push('"');
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flush_pending()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{JsArray, JsBinary, JsObject};
     use crate::{parse, parse_bytes, parse_chars, parse_js_string};
     use fiber_string::JsString;
     use indexmap::IndexMap;
 
     #[test]
     fn stringify_primitives_and_numbers() {
-        assert_eq!(stringify(&JsValue::Null), "null");
-        assert_eq!(stringify(&JsValue::Undefined), "null");
-        assert_eq!(stringify(&JsValue::Bool(true)), "true");
-        assert_eq!(stringify(&JsValue::Int(-7)), "-7");
-        assert_eq!(stringify(&JsValue::Float(1.5)), "1.5");
+        assert_eq!(stringify(&JsValue::Null).unwrap(), "null");
+        assert_eq!(stringify(&JsValue::Undefined).unwrap(), "null");
+        assert_eq!(stringify(&JsValue::Bool(true)).unwrap(), "true");
+        assert_eq!(stringify(&JsValue::Int(-7)).unwrap(), "-7");
+        assert_eq!(stringify(&JsValue::Float(1.5)).unwrap(), "1.5");
     }
 
     #[test]
     fn stringify_string_with_escapes() {
         let s = JsValue::String(JsString::from("line\n\t\"quote\"\\"));
-        assert_eq!(stringify(&s), "\"line\\n\\t\\\"quote\\\"\\\\\"");
+        assert_eq!(stringify(&s).unwrap(), "\"line\\n\\t\\\"quote\\\"\\\\\"");
     }
 
     #[test]
@@ -126,26 +152,40 @@ mod tests {
             JsValue::Undefined,
             JsValue::String(JsString::from("ok")),
         ]);
-        assert_eq!(stringify(&JsValue::Array(array)), "[1,null,null,\"ok\"]");
+        assert_eq!(
+            stringify(&JsValue::Array(array)).unwrap(),
+            "[1,null,null,\"ok\"]"
+        );
 
         let mut map = IndexMap::new();
         map.insert(JsString::from("a"), JsValue::Bool(false));
         map.insert(JsString::from("b"), JsValue::Int(2));
         let object = JsObject::new(map);
-        assert_eq!(stringify(&JsValue::Object(object)), "{\"a\":false,\"b\":2}");
+        assert_eq!(
+            stringify(&JsValue::Object(object)).unwrap(),
+            "{\"a\":false,\"b\":2}"
+        );
     }
 
     #[test]
     fn stringify_binary_as_base64() {
         let bytes = JsBinary::from_slice(b"\x01\x02\x03");
-        assert_eq!(stringify(&JsValue::Binary(bytes)), "\"AQID\"");
+        assert_eq!(stringify(&JsValue::Binary(bytes)).unwrap(), "\"AQID\"");
+    }
+
+    #[test]
+    fn stringify_and_parse_roundtrip_with_emoji_and_escapes() {
+        let source = JsValue::String(JsString::from("line\n\t\"quote\" 😃"));
+        let rendered = stringify(&source).expect("render to json");
+        let reparsed = parse(&rendered).expect("parse rendered json");
+        assert_eq!(reparsed, source);
     }
 
     #[test]
     fn stringify_and_parse_roundtrip_complex() {
         let source = r#"{"a":[1,2,{"b":"x\n\"y","c":[false,null]}],"num":-0.5,"text":"hi\u00A9"}"#;
         let parsed = parse(source).expect("parse original json");
-        let rendered = stringify(&parsed);
+        let rendered = stringify(&parsed).unwrap();
         let reparsed = parse(&rendered).expect("parse rendered json");
         assert_eq!(reparsed, parsed);
     }
@@ -153,12 +193,25 @@ mod tests {
     #[test]
     fn undefined_becomes_null_on_roundtrip() {
         let array = JsArray::new(vec![JsValue::Undefined, JsValue::Int(1)]);
-        let rendered = stringify(&JsValue::Array(array.clone()));
+        let rendered = stringify(&JsValue::Array(array.clone())).unwrap();
         assert_eq!(rendered, "[null,1]");
 
         let reparsed = parse(&rendered).expect("parse rendered json");
         let expected = JsArray::new(vec![JsValue::Null, JsValue::Int(1)]);
         assert_eq!(reparsed, JsValue::Array(expected));
+    }
+
+    #[test]
+    fn stringify_js_string_prefers_latin1_and_handles_utf16() {
+        let latin_value = JsValue::String(JsString::from("ok"));
+        let latin_js = stringify_js_string(&latin_value).unwrap();
+        assert!(latin_js.as_str().as_latin1().is_some());
+        assert_eq!(latin_js.to_std_string().unwrap(), "\"ok\"");
+
+        let utf16_value = JsValue::String(JsString::from("hi\u{20AC}"));
+        let utf16_js = stringify_js_string(&utf16_value).unwrap();
+        assert!(utf16_js.as_str().as_latin1().is_none());
+        assert_eq!(utf16_js.to_std_string().unwrap(), "\"hi\u{20AC}\"");
     }
 
     #[test]
