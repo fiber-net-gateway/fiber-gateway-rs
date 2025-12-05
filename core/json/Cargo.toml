@@ -9,3 +9,12 @@ indexmap.workspace = true
 itoa.workspace = true
 ryu-js.workspace = true
 base64.workspace = true
+rustc-hash = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+criterion = "0.5"
+serde_json = "1.0"
+
+[[bench]]
+name = "json_bench"
+harness = false

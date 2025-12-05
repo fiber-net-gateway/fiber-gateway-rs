@@ -1,10 +1,14 @@
 use crate::gc::GcRef;
 use fiber_string::JsString;
 use indexmap::IndexMap;
+use rustc_hash::FxHasher;
 use std::cell::RefCell;
 use std::fmt;
+use std::hash::BuildHasherDefault;
 use std::ops::Deref;
 use std::rc::Rc;
+
+pub type JsMap = IndexMap<JsString, JsValue, BuildHasherDefault<FxHasher>>;
 
 /// GC-managed JSON array with interior mutability for edits.
 #[derive(Clone)]
@@ -15,7 +19,7 @@ pub struct JsArray {
 /// GC-managed JSON object with interior mutability for edits.
 #[derive(Clone)]
 pub struct JsObject {
-    ptr: GcRef<RefCell<IndexMap<JsString, JsValue>>>,
+    ptr: GcRef<RefCell<JsMap>>,
 }
 
 /// Binary data representation.
@@ -80,14 +84,21 @@ impl JsArray {
 }
 
 impl JsObject {
-    pub fn new(map: IndexMap<JsString, JsValue>) -> Self {
+    pub fn new(map: JsMap) -> Self {
         Self {
             ptr: GcRef::new(RefCell::new(map)),
         }
     }
 
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::new(JsMap::with_capacity_and_hasher(
+            capacity,
+            BuildHasherDefault::<FxHasher>::default(),
+        ))
+    }
+
     pub fn new_empty() -> Self {
-        Self::new(IndexMap::new())
+        Self::with_capacity(0)
     }
 
     pub fn len(&self) -> usize {
@@ -127,7 +138,7 @@ impl Deref for JsArray {
 }
 
 impl Deref for JsObject {
-    type Target = RefCell<IndexMap<JsString, JsValue>>;
+    type Target = RefCell<JsMap>;
 
     fn deref(&self) -> &Self::Target {
         &*self.ptr
@@ -222,6 +233,7 @@ impl std::error::Error for JsonError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::JsMap;
 
     #[test]
     fn array_crud_operations() {
@@ -244,7 +256,7 @@ mod tests {
 
     #[test]
     fn object_crud_operations() {
-        let mut initial = IndexMap::new();
+        let mut initial = JsMap::with_capacity_and_hasher(1, Default::default());
         initial.insert(JsString::from("a"), JsValue::Int(1));
         let obj = JsObject::new(initial);
 
