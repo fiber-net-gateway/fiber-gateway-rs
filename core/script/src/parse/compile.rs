@@ -359,9 +359,6 @@ impl<'a> Compiler<'a> {
                 );
             }
             ExprKind::Call { callee, args } => {
-                for arg in args {
-                    self.compile_expr(arg)?;
-                }
                 let func = self
                     .library
                     .resolve_function(callee.namespace.as_deref(), &callee.name)
@@ -380,13 +377,37 @@ impl<'a> Compiler<'a> {
                 };
                 let idx = self.push_operand(fun.operand);
                 let argc = args.len() as u32;
-                let code = if fun.is_async {
-                    self.has_async = true;
-                    (OpCode::CallAsyncFunc as u8) as u32 | (argc << 8) | ((idx as u32) << 16)
+                let uses_spread = args.iter().any(|a| a.spread);
+
+                if uses_spread {
+                    self.emit(OpCode::NewArray as u8, 0, span_to_pos(Some(expr.span)));
+                    for arg in args {
+                        self.compile_expr(&arg.expr)?;
+                        if arg.spread {
+                            self.emit(OpCode::ExpArray as u8, 0, span_to_pos(Some(arg.expr.span)));
+                        } else {
+                            self.emit(OpCode::PushArray as u8, 0, span_to_pos(Some(arg.expr.span)));
+                        }
+                    }
+                    let code = if fun.is_async {
+                        self.has_async = true;
+                        OpCode::CallAsyncFuncSpread as u8
+                    } else {
+                        OpCode::CallFuncSpread as u8
+                    };
+                    self.emit(code, idx as u32, span_to_pos(Some(expr.span)));
                 } else {
-                    (OpCode::CallFunc as u8) as u32 | (argc << 8) | ((idx as u32) << 16)
-                };
-                self.emit_raw(code, span_to_pos(Some(expr.span)));
+                    for arg in args {
+                        self.compile_expr(&arg.expr)?;
+                    }
+                    let code = if fun.is_async {
+                        self.has_async = true;
+                        (OpCode::CallAsyncFunc as u8) as u32 | (argc << 8) | ((idx as u32) << 16)
+                    } else {
+                        (OpCode::CallFunc as u8) as u32 | (argc << 8) | ((idx as u32) << 16)
+                    };
+                    self.emit_raw(code, span_to_pos(Some(expr.span)));
+                }
             }
             ExprKind::Binary { op, left, right } => match op {
                 BinaryOp::And => {

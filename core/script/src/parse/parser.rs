@@ -437,7 +437,9 @@ impl Parser {
                     let mut args = Vec::new();
                     if !matches!(self.peek().kind, TokenKind::RParen) {
                         loop {
-                            args.push(self.parse_expression(0)?);
+                            let spread = self.matches(&TokenKind::Spread);
+                            let expr = self.parse_expression(0)?;
+                            args.push(CallArg { expr, spread });
                             if !self.matches(&TokenKind::Comma) {
                                 break;
                             }

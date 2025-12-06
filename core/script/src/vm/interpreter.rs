@@ -623,9 +623,19 @@ impl<'attach> InterpreterVm<'attach> {
     fn expand_array(&mut self) {
         let source = self.pop().unwrap_or(JsValue::Undefined);
         let target = self.pop().unwrap_or(JsValue::Undefined);
-        if let (JsValue::Array(dst), JsValue::Array(src)) = (target.clone(), source) {
-            for v in src.borrow().iter() {
-                dst.push(v.clone());
+        if let JsValue::Array(dst) = target.clone() {
+            match source {
+                JsValue::Array(src) => {
+                    for v in src.borrow().iter() {
+                        dst.push(v.clone());
+                    }
+                }
+                JsValue::Object(obj) => {
+                    for (_, v) in obj.borrow().iter() {
+                        dst.push(v.clone());
+                    }
+                }
+                _ => {}
             }
             self.push(JsValue::Array(dst));
         } else {

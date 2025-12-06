@@ -204,6 +204,78 @@ fn binary_ops_across_types_follow_js_semantics() {
 }
 
 #[test]
+fn unary_operations_follow_js_like_semantics() {
+    let result = run(
+        "
+        let u;
+        return [
+            +1,
+            +\"2\",
+            -true,
+            -\"3\",
+            !0,
+            !1,
+            typeof 1,
+            typeof null,
+            typeof u
+        ];
+        ",
+        JsValue::Null,
+    );
+
+    let expected = JsValue::array(vec![
+        JsValue::Int(1),
+        JsValue::Float(2.0),
+        JsValue::Int(-1),
+        JsValue::Float(-3.0),
+        JsValue::Bool(true),
+        JsValue::Bool(false),
+        JsValue::String("number".into()),
+        JsValue::String("object".into()),
+        JsValue::String("undefined".into()),
+    ]);
+
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn function_spread_arguments_flatten_iterables() {
+    let mut library = Library::empty();
+    library.register_function(None, "gather", |ctx: VmCallContext<'_>| {
+        let mut items = Vec::new();
+        for idx in 0..ctx.arg_count() {
+            items.push(ctx.arg(idx).cloned().unwrap_or(JsValue::Undefined));
+        }
+        Ok(JsValue::array(items))
+    });
+
+    let script = Script::compile_with(
+        "
+        let arr = [1,2,3];
+        let obj = {a:4, b:5};
+        let v = 3;
+        return gather(0, ...arr, ...obj, ...v, 6);
+        ",
+        library,
+    )
+    .unwrap();
+
+    let result = script.block_exec(JsValue::Null, None).unwrap();
+    assert_eq!(
+        result,
+        JsValue::array(vec![
+            JsValue::Int(0),
+            JsValue::Int(1),
+            JsValue::Int(2),
+            JsValue::Int(3),
+            JsValue::Int(4),
+            JsValue::Int(5),
+            JsValue::Int(6),
+        ])
+    );
+}
+
+#[test]
 fn directive_namespace_resolves_functions() {
     #[derive(Debug)]
     struct HttpDirective {
@@ -510,6 +582,68 @@ fn for_of_respects_continue() {
 }
 
 #[test]
+fn for_of_with_async_function_calls() {
+    #[derive(Debug)]
+    struct AsyncDouble;
+    #[async_trait::async_trait(?Send)]
+    impl VmAsyncFunction for AsyncDouble {
+        async fn call(self: std::sync::Arc<Self>, ctx: VmCallContext<'_>) -> VmResult {
+            let val = ctx.arg(0).cloned().unwrap_or(JsValue::Int(0));
+            if let JsValue::Int(n) = val {
+                Ok(JsValue::Int(n * 2))
+            } else {
+                Ok(JsValue::Undefined)
+            }
+        }
+    }
+
+    let mut library = Library::empty();
+    library.register_async_function(None, "adouble", AsyncDouble);
+
+    let script = Script::compile_with(
+        "
+        let arr = [1,2,3];
+        let sum = 0;
+        for (let _, n of arr) {
+            sum = sum + adouble(n);
+        }
+        return sum;
+        ",
+        library,
+    )
+    .unwrap();
+
+    let result = run_async_script(script);
+    assert_eq!(result, JsValue::Int(12));
+}
+
+#[test]
+fn for_of_with_async_constant() {
+    let mut library = Library::empty();
+    library.register_async_const(
+        Some("env"),
+        "val",
+        |_ctx: VmCallContext<'_>| async { Ok(JsValue::Int(5)) },
+    );
+
+    let script = Script::compile_with(
+        "
+        let sum = 0;
+        for (let _, n of [1,2,3]) {
+            sum = sum + $env.val;
+        }
+        return sum;
+        ",
+        library,
+    )
+    .unwrap();
+
+    let result = run_async_script(script);
+    // $env.val resolved each iteration => 3 * 5 = 15
+    assert_eq!(result, JsValue::Int(15));
+}
+
+#[test]
 fn try_catch_captures_thrown_value() {
     let result = run(
         "
@@ -669,6 +803,34 @@ fn object_and_array_assignment() {
                 "b":2,
                 "arr1":3,
                 "arr3":9
+            }"#
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn object_creation_with_computed_and_spread() {
+    let result = run(
+        r#"
+        let a = 1;
+        let d = "d";
+        let p = {e: 5};
+        let obj = {a, "b": 2, c: 3, [d]: 4, ...p};
+        return obj;
+        "#,
+        JsValue::Null,
+    );
+
+    assert_eq!(
+        result,
+        fiber_json::parse(
+            r#"{
+                "a":1,
+                "b":2,
+                "c":3,
+                "d":4,
+                "e":5
             }"#
         )
         .unwrap()

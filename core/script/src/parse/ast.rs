@@ -115,7 +115,7 @@ pub(crate) enum ExprKind {
     },
     Call {
         callee: CallTarget,
-        args: Vec<Expr>,
+        args: Vec<CallArg>,
     },
     Member {
         object: Box<Expr>,
@@ -139,6 +139,12 @@ pub(crate) struct CallTarget {
     pub span: Span,
     pub namespace: Option<String>,
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CallArg {
+    pub expr: Expr,
+    pub spread: bool,
 }
 
 #[derive(Debug, Clone)]
