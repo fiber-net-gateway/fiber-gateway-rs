@@ -94,8 +94,7 @@ mod tests {
     fn parse_js_string_handles_escapes_and_emoji() {
         let json = JsString::from(r#"{"msg":"line\n\t\"q\" \uD83D\uDE03"}"#);
         let parsed = parse_js_string(&json).expect("parse JsString input");
-        let expected =
-            s("line\n\t\"q\" 😃");
+        let expected = s("line\n\t\"q\" 😃");
 
         let mut map = IndexMap::new();
         map.insert(JsString::from("msg"), expected);

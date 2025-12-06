@@ -98,6 +98,9 @@ impl JsObject {
         self.borrow().is_empty()
     }
 
+    pub fn get_by_key(&self, key: &JsString) -> Option<JsValue> {
+        self.borrow().get(key).cloned()
+    }
     pub fn get(&self, key: impl AsRef<str>) -> Option<JsValue> {
         let key = JsString::from(key.as_ref());
         self.borrow().get(&key).cloned()
@@ -202,6 +205,135 @@ pub enum JsValue {
     Binary(JsBinary),
     Array(JsArray),
     Object(JsObject),
+    Iterator(JsIterator),
+    Exception(JsException),
+}
+
+/// Iterator over a snapshot of keys/values used by the scripting VM.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsIterator {
+    entries: Vec<(Option<JsValue>, JsValue)>,
+    pos: usize,
+}
+
+impl JsIterator {
+    pub fn new(entries: Vec<(Option<JsValue>, JsValue)>) -> Self {
+        Self { entries, pos: 0 }
+    }
+
+    pub fn from_value(value: JsValue) -> Self {
+        match value {
+            JsValue::Array(arr) => {
+                let entries = arr
+                    .borrow()
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, v)| (Some(JsValue::Int(idx as i64)), v.clone()))
+                    .collect();
+                Self::new(entries)
+            }
+            JsValue::Object(obj) => {
+                let entries = obj
+                    .borrow()
+                    .iter()
+                    .map(|(k, v)| (Some(JsValue::String(k.clone())), v.clone()))
+                    .collect();
+                Self::new(entries)
+            }
+            other => Self::new(vec![(None, other)]),
+        }
+    }
+
+    pub fn next(&mut self) -> bool {
+        if self.pos < self.entries.len() {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn current_key(&self) -> Option<JsValue> {
+        self.entries
+            .get(self.pos.saturating_sub(1))
+            .and_then(|(k, _)| k.clone())
+    }
+
+    pub fn current_value(&self) -> Option<JsValue> {
+        self.entries
+            .get(self.pos.saturating_sub(1))
+            .map(|(_, v)| v.clone())
+    }
+}
+
+/// Exception payload used by the scripting VM.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsException {
+    pub message: String,
+    pub position: Option<u64>,
+}
+
+impl JsException {
+    pub fn new(message: impl Into<String>, position: Option<u64>) -> Self {
+        Self {
+            message: message.into(),
+            position,
+        }
+    }
+}
+
+impl JsValue {
+    pub fn undefined() -> Self {
+        Self::Undefined
+    }
+
+    pub fn null() -> Self {
+        Self::Null
+    }
+
+    pub fn bool(value: bool) -> Self {
+        Self::Bool(value)
+    }
+
+    pub fn int(value: i64) -> Self {
+        Self::Int(value)
+    }
+
+    pub fn float(value: f64) -> Self {
+        Self::Float(value)
+    }
+
+    pub fn string(value: impl Into<JsString>) -> Self {
+        Self::String(value.into())
+    }
+
+    pub fn binary(bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Binary(JsBinary::new(bytes.into()))
+    }
+
+    pub fn array(items: Vec<JsValue>) -> Self {
+        Self::Array(JsArray::new(items))
+    }
+
+    pub fn new_empty_array() -> Self {
+        Self::Array(JsArray::new(Vec::new()))
+    }
+
+    pub fn object(map: IndexMap<JsString, JsValue>) -> Self {
+        Self::Object(JsObject::new(map))
+    }
+
+    pub fn new_empty_object() -> Self {
+        Self::Object(JsObject::new(IndexMap::new()))
+    }
+
+    pub fn iterator(iter: JsIterator) -> Self {
+        Self::Iterator(iter)
+    }
+
+    pub fn exception(message: impl Into<String>, position: Option<u64>) -> Self {
+        Self::Exception(JsException::new(message, position))
+    }
 }
 
 /// Error returned when parsing fails.
@@ -278,5 +410,49 @@ mod tests {
         assert_eq!(data.len(), 3);
         assert!(!data.is_empty());
         assert_eq!(data.as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn js_value_construction_helpers() {
+        assert_eq!(JsValue::undefined(), JsValue::Undefined);
+        assert_eq!(JsValue::null(), JsValue::Null);
+        assert_eq!(JsValue::bool(true), JsValue::Bool(true));
+        assert_eq!(JsValue::int(-7), JsValue::Int(-7));
+        assert_eq!(JsValue::float(1.5), JsValue::Float(1.5));
+        assert_eq!(JsValue::string("hi"), JsValue::String(JsString::from("hi")));
+
+        let binary = JsValue::binary(vec![1u8, 2, 3]);
+        assert_eq!(binary, JsValue::Binary(JsBinary::new(vec![1u8, 2, 3])));
+
+        let array = JsValue::array(vec![JsValue::int(1), JsValue::bool(false)]);
+        if let JsValue::Array(arr) = array {
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr.get(1), Some(JsValue::Bool(false)));
+        } else {
+            panic!("expected array JsValue");
+        }
+
+        let mut entries = IndexMap::new();
+        entries.insert(JsString::from("a"), JsValue::null());
+        let object = JsValue::object(entries);
+        if let JsValue::Object(obj) = object {
+            assert!(obj.contains_key("a"));
+            assert_eq!(obj.get("a"), Some(JsValue::Null));
+            assert_eq!(obj.len(), 1);
+        } else {
+            panic!("expected object JsValue");
+        }
+
+        if let JsValue::Array(arr) = JsValue::new_empty_array() {
+            assert!(arr.is_empty());
+        } else {
+            panic!("expected empty array JsValue");
+        }
+
+        if let JsValue::Object(obj) = JsValue::new_empty_object() {
+            assert!(obj.is_empty());
+        } else {
+            panic!("expected empty object JsValue");
+        }
     }
 }

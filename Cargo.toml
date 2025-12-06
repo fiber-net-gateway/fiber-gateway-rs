@@ -17,6 +17,7 @@ description = "A gateway framework"
 # Repo Crates
 fiber_json = { version = "~0.1.0", path = "core/json" }
 fiber_string = { version = "~0.1.0", path = "core/string" }
+fiber_script = { version = "~0.1.0", path = "core/script" }
 
 indexmap = "2.2.6"
 static_assertions = "1.1.0"
@@ -28,6 +29,15 @@ fast-float2 = "0.2.3"
 base64 = "0.22.1"
 serde_json = "1.0.120"
 serde = { version = "1.0.197", features = ["std"] }
+regex = "1.12.2"
+crc32fast = "1.5.0"
+md5 = "0.8"
+sha1 = "0.10.6"
+sha2 = "0.10.9"
+rand = "0.8"
+time = { version = "0.3", features = ["formatting", "macros"] }
+url = "2.5"
+urlencoding = "2.1"
 
 
 [workspace.lints.rust]

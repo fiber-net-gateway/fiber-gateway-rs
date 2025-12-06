@@ -7,4 +7,4 @@ mod types;
 pub use crate::gc::{GcPointer, GcRef};
 pub use crate::parser::{parse, parse_bytes, parse_chars, parse_js_string};
 pub use crate::stringify::{stringify, stringify_js_string};
-pub use crate::types::{JsBinary, JsObject, JsValue, JsonError};
+pub use crate::types::{JsArray, JsBinary, JsException, JsIterator, JsObject, JsValue, JsonError};
