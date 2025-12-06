@@ -1,13 +1,27 @@
-use crate::parse::compile::{ConstRef, DirectiveRef, FunctionRef, LibraryResolver};
+use crate::parse::compile::{ConstRef, FunctionRef, LibraryResolver};
 use crate::vm::{VmAsyncConstant, VmAsyncFunction, VmConstant, VmFunction, VmOperand};
 use indexmap::IndexMap;
+use std::rc::Rc;
 use std::sync::Arc;
+
+pub trait Directive: std::fmt::Debug {
+    fn find_function(&self, namespace: &str, name: &str) -> Option<FunctionRef>;
+}
+
+pub trait DirectiveFactory: std::fmt::Debug {
+    fn create_directive(
+        &self,
+        ty: &str,
+        namespace: &str,
+        literal: &str,
+    ) -> Option<Rc<dyn Directive>>;
+}
 
 #[derive(Debug)]
 pub struct Library {
     functions: IndexMap<String, FunctionRef>,
     consts: IndexMap<String, ConstRef>,
-    directives: Vec<DirectiveRef>,
+    directives: IndexMap<String, Rc<dyn DirectiveFactory>>,
 }
 
 impl Library {
@@ -23,7 +37,7 @@ impl Library {
         Self {
             functions: IndexMap::new(),
             consts: IndexMap::new(),
-            directives: Vec::new(),
+            directives: IndexMap::new(),
         }
     }
 
@@ -83,8 +97,12 @@ impl Library {
         self.consts.insert(key, ConstRef { operand, is_async });
     }
 
-    pub fn register_directive(&mut self, directive: DirectiveRef) {
-        self.directives.push(directive);
+    pub fn register_directive_factory(
+        &mut self,
+        ty: impl Into<String>,
+        factory: Rc<dyn DirectiveFactory>,
+    ) {
+        self.directives.insert(ty.into(), factory);
     }
 
     fn register_stdlib(&mut self) {}
@@ -113,11 +131,7 @@ impl LibraryResolver for Library {
         self.consts.get(&key).cloned()
     }
 
-    fn resolve_directive(&self, ty: &str, name: &str, literal: &str) -> Option<DirectiveRef> {
-        let target = format!("{ty}:{name}:{literal}");
-        self.directives
-            .iter()
-            .find(|d| matches!(&d.value, VmOperand::Text(s) if s == &target))
-            .cloned()
+    fn resolve_directive_type(&self, ty: &str) -> Option<Rc<dyn DirectiveFactory>> {
+        self.directives.get(ty).cloned()
     }
 }

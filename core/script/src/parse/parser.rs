@@ -252,7 +252,13 @@ impl Parser {
                 ));
             }
         };
-        self.consume(&TokenKind::From)?;
+        // Accept either legacy `from` keyword or `=` sign.
+        if !self.matches(&TokenKind::From) && !self.matches(&TokenKind::Assign) {
+            return Err(ScriptError::with_pos(
+                "expected '=' or 'from' after directive name",
+                self.peek().pos,
+            ));
+        }
         let ty = match self.bump().kind.clone() {
             TokenKind::Identifier(id) => id,
             other => {

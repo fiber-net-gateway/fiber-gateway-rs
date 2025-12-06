@@ -1,4 +1,7 @@
 use super::*;
+use crate::parse::compile::FunctionRef;
+use crate::stdlib::{Directive, DirectiveFactory};
+use crate::vm::VmOperand;
 use fiber_json::JsValue;
 use std::pin::Pin;
 use std::task::Context;
@@ -197,6 +200,256 @@ fn binary_ops_across_types_follow_js_semantics() {
     .unwrap();
 
     assert_eq!(result, expected);
+}
+
+#[test]
+fn directive_namespace_resolves_functions() {
+    #[derive(Debug)]
+    struct HttpDirective {
+        base: String,
+    }
+    impl Directive for HttpDirective {
+        fn find_function(&self, _namespace: &str, name: &str) -> Option<FunctionRef> {
+            if name != "sendRequest" {
+                return None;
+            }
+            let base = self.base.clone();
+            let func = move |ctx: VmCallContext<'_>| {
+                let arg = match ctx.arg(0) {
+                    Some(JsValue::String(s)) => s.to_std_string_lossy(),
+                    Some(other) => format!("{other:?}"),
+                    None => String::new(),
+                };
+                Ok(JsValue::String(fiber_string::JsString::from(format!(
+                    "{base}{arg}"
+                ))))
+            };
+            Some(FunctionRef {
+                operand: VmOperand::Function(std::sync::Arc::new(func)),
+                is_async: false,
+            })
+        }
+    }
+    #[derive(Debug)]
+    struct HttpDirectiveFactory;
+    impl DirectiveFactory for HttpDirectiveFactory {
+        fn create_directive(
+            &self,
+            _ty: &str,
+            _namespace: &str,
+            literal: &str,
+        ) -> Option<std::rc::Rc<dyn Directive>> {
+            Some(std::rc::Rc::new(HttpDirective {
+                base: literal.to_string(),
+            }))
+        }
+    }
+    let mut library = Library::empty();
+    library.register_directive_factory("http", std::rc::Rc::new(HttpDirectiveFactory));
+
+    let script =
+        Script::compile_with(r#"directive google = http "https://google.com"; return google.sendRequest("/search?q=rust");"#, library)
+            .unwrap();
+    let result = script.block_exec(JsValue::Null, None).unwrap();
+    assert_eq!(
+        result,
+        JsValue::String(fiber_string::JsString::from(
+            "https://google.com/search?q=rust"
+        ))
+    );
+}
+
+#[test]
+fn directive_allows_async_functions() {
+    #[derive(Debug)]
+    struct AsyncAdderDirective;
+    impl Directive for AsyncAdderDirective {
+        fn find_function(&self, _namespace: &str, name: &str) -> Option<FunctionRef> {
+            if name != "add" {
+                return None;
+            }
+            struct AsyncAdder;
+            #[async_trait::async_trait(?Send)]
+            impl VmAsyncFunction for AsyncAdder {
+                async fn call(self: std::sync::Arc<Self>, ctx: VmCallContext<'_>) -> VmResult {
+                    let val = ctx.arg(0).cloned().unwrap_or(JsValue::Int(0));
+                    let JsValue::Int(n) = val else {
+                        return Ok(JsValue::Undefined);
+                    };
+                    Ok(JsValue::Int(n + 1))
+                }
+            }
+            Some(FunctionRef {
+                operand: VmOperand::AsyncFunction(std::sync::Arc::new(AsyncAdder)),
+                is_async: true,
+            })
+        }
+    }
+    #[derive(Debug)]
+    struct AsyncAdderFactory;
+    impl DirectiveFactory for AsyncAdderFactory {
+        fn create_directive(
+            &self,
+            _ty: &str,
+            _namespace: &str,
+            _literal: &str,
+        ) -> Option<std::rc::Rc<dyn Directive>> {
+            Some(std::rc::Rc::new(AsyncAdderDirective))
+        }
+    }
+
+    let mut library = Library::empty();
+    library.register_directive_factory("asyncns", std::rc::Rc::new(AsyncAdderFactory));
+
+    let script = Script::compile_with(
+        r#"
+        directive svc = asyncns "meta";
+        return svc.add(5);
+        "#,
+        library,
+    )
+    .unwrap();
+
+    let mut vm = script.exec(JsValue::Null, None);
+    let mut fut = Pin::new(&mut vm).into_future();
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let res = Pin::new(&mut fut).poll(&mut cx);
+    match res {
+        std::task::Poll::Ready(Ok(val)) => assert_eq!(val, JsValue::Int(6)),
+        other => panic!("unexpected poll result: {:?}", other),
+    }
+}
+
+#[test]
+fn directive_scope_not_hoisted() {
+    #[derive(Debug)]
+    struct DummyDirectiveFactory;
+    impl DirectiveFactory for DummyDirectiveFactory {
+        fn create_directive(
+            &self,
+            _ty: &str,
+            _namespace: &str,
+            _literal: &str,
+        ) -> Option<std::rc::Rc<dyn Directive>> {
+            None
+        }
+    }
+    let mut library = Library::empty();
+    library.register_directive_factory("http", std::rc::Rc::new(DummyDirectiveFactory));
+
+    let script = Script::compile_with(
+        r#"
+        return google.sendRequest("/before");
+        directive google = http "https://example.com";
+        "#,
+        library,
+    );
+    assert!(
+        script.is_err(),
+        "directive should not be usable before declaration"
+    );
+}
+
+#[test]
+fn directive_available_after_declaration_even_in_block() {
+    #[derive(Debug)]
+    struct HttpDirective {
+        base: String,
+    }
+    impl Directive for HttpDirective {
+        fn find_function(&self, _namespace: &str, name: &str) -> Option<FunctionRef> {
+            if name != "sendRequest" {
+                return None;
+            }
+            let base = self.base.clone();
+            let func = move |ctx: VmCallContext<'_>| {
+                let arg = match ctx.arg(0) {
+                    Some(JsValue::String(s)) => s.to_std_string_lossy(),
+                    Some(other) => format!("{other:?}"),
+                    None => String::new(),
+                };
+                Ok(JsValue::String(fiber_string::JsString::from(format!(
+                    "{base}{arg}"
+                ))))
+            };
+            Some(FunctionRef {
+                operand: VmOperand::Function(std::sync::Arc::new(func)),
+                is_async: false,
+            })
+        }
+    }
+    #[derive(Debug)]
+    struct HttpDirectiveFactory;
+    impl DirectiveFactory for HttpDirectiveFactory {
+        fn create_directive(
+            &self,
+            _ty: &str,
+            _namespace: &str,
+            literal: &str,
+        ) -> Option<std::rc::Rc<dyn Directive>> {
+            Some(std::rc::Rc::new(HttpDirective {
+                base: literal.to_string(),
+            }))
+        }
+    }
+
+    let mut library = Library::empty();
+    library.register_directive_factory("http", std::rc::Rc::new(HttpDirectiveFactory));
+
+    let script = Script::compile_with(
+        r#"
+        if (1) {
+            directive svc = http "https://scoped.com";
+        }
+        return svc.sendRequest("/path");
+        "#,
+        library,
+    )
+    .unwrap();
+
+    let result = script.block_exec(JsValue::Null, None).unwrap();
+    assert_eq!(
+        result,
+        JsValue::String(fiber_string::JsString::from("https://scoped.com/path"))
+    );
+}
+
+#[test]
+fn variable_must_be_declared_before_use() {
+    let script = Script::compile("return not_defined;");
+    assert!(script.is_err(), "using undeclared variable should error");
+}
+
+#[test]
+fn inner_scope_can_shadow_outer() {
+    let result = run(
+        "
+        let a = 1;
+        if (true) {
+            let a = 2;
+            let b = a + 1;
+            // returning here would end script; keep value to outer
+            b;
+        }
+        return a;
+        ",
+        JsValue::Null,
+    );
+    assert_eq!(result, JsValue::Int(1));
+}
+
+#[test]
+fn inner_scope_variable_not_visible_outside() {
+    let script = Script::compile(
+        "
+        if (true) {
+            let x = 10;
+        }
+        return x;
+        ",
+    );
+    assert!(script.is_err(), "inner scope variable should not escape");
 }
 
 #[test]

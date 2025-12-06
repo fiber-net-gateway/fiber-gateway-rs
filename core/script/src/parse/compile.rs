@@ -1,6 +1,7 @@
 use crate::error::ScriptError;
 use crate::parse::ast::*;
 use crate::vm::{OpCode, VmOperand};
+use std::rc::Rc;
 
 #[derive(Debug)]
 pub struct CompiledScript {
@@ -25,16 +26,11 @@ pub struct ConstRef {
     pub is_async: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct DirectiveRef {
-    pub value: VmOperand,
-}
-
 /// Resolve symbols during compilation.
 pub trait LibraryResolver {
     fn resolve_function(&self, namespace: Option<&str>, name: &str) -> Option<FunctionRef>;
     fn resolve_const(&self, namespace: Option<&str>, name: &str) -> Option<ConstRef>;
-    fn resolve_directive(&self, ty: &str, name: &str, literal: &str) -> Option<DirectiveRef>;
+    fn resolve_directive_type(&self, ty: &str) -> Option<Rc<dyn crate::stdlib::DirectiveFactory>>;
 }
 
 pub struct Compiler<'a> {
@@ -43,9 +39,10 @@ pub struct Compiler<'a> {
     operands: Vec<VmOperand>,
     pos: Vec<u64>,
     has_async: bool,
-    vars: indexmap::IndexMap<String, usize>,
     stack_size: usize,
     var_table_size: usize,
+    directives: indexmap::IndexMap<String, Rc<dyn crate::stdlib::Directive>>,
+    scopes: Vec<indexmap::IndexMap<String, usize>>,
 }
 
 impl<'a> Compiler<'a> {
@@ -56,9 +53,10 @@ impl<'a> Compiler<'a> {
             operands: Vec::new(),
             pos: Vec::new(),
             has_async: false,
-            vars: indexmap::IndexMap::new(),
             stack_size: 8,
             var_table_size: 0,
+            directives: indexmap::IndexMap::new(),
+            scopes: vec![indexmap::IndexMap::new()],
         }
     }
 
@@ -84,13 +82,20 @@ impl<'a> Compiler<'a> {
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), ScriptError> {
         match &stmt.kind {
             StmtKind::Block(block) => {
+                let needs_scope = !matches!(block.ty, BlockType::Script);
+                if needs_scope {
+                    self.enter_scope();
+                }
                 for stmt in &block.statements {
                     self.compile_stmt(stmt)?;
+                }
+                if needs_scope {
+                    self.exit_scope();
                 }
             }
             StmtKind::Let(bindings) => {
                 for binding in bindings {
-                    let slot = self.alloc_var(&binding.name);
+                    let slot = self.declare_var(&binding.name);
                     if let Some(init) = &binding.init {
                         self.compile_expr(init)?;
                     } else {
@@ -129,14 +134,19 @@ impl<'a> Compiler<'a> {
                 self.emit(OpCode::ThrowExp as u8, 0, span_to_pos(Some(stmt.span)));
             }
             StmtKind::Directive { name, ty, literal } => {
-                if let Some(dir) = self.library.resolve_directive(ty, name, literal) {
-                    let op_idx = self.push_operand(dir.value);
-                    self.emit(
-                        OpCode::LoadConst as u8,
-                        op_idx as u32,
-                        span_to_pos(Some(stmt.span)),
-                    );
-                }
+                let Some(handler) = self.library.resolve_directive_type(ty) else {
+                    return Err(ScriptError::with_pos(
+                        format!("unknown directive type {}", ty),
+                        stmt.span.start,
+                    ));
+                };
+                let Some(instance) = handler.create_directive(ty, name, literal) else {
+                    return Err(ScriptError::with_pos(
+                        format!("failed to create directive {}", name),
+                        stmt.span.start,
+                    ));
+                };
+                self.directives.insert(name.clone(), instance);
             }
             StmtKind::If {
                 cond,
@@ -207,7 +217,12 @@ impl<'a> Compiler<'a> {
                 }
             }
             ExprKind::Identifier(name) => {
-                let slot = self.alloc_var(name);
+                let Some(slot) = self.resolve_var(name) else {
+                    return Err(ScriptError::with_pos(
+                        format!("undefined variable {name}"),
+                        expr.span.start,
+                    ));
+                };
                 self.emit(
                     OpCode::LoadVar as u8,
                     slot as u32,
@@ -220,7 +235,14 @@ impl<'a> Compiler<'a> {
                 }
                 let func = self
                     .library
-                    .resolve_function(callee.namespace.as_deref(), &callee.name);
+                    .resolve_function(callee.namespace.as_deref(), &callee.name)
+                    .or_else(|| {
+                        callee.namespace.as_ref().and_then(|ns| {
+                            self.directives
+                                .get(ns)
+                                .and_then(|dir| dir.find_function(ns, &callee.name))
+                        })
+                    });
                 let Some(fun) = func else {
                     return Err(ScriptError::with_pos(
                         format!("unknown function {}", callee.name),
@@ -341,7 +363,12 @@ impl<'a> Compiler<'a> {
                 ExprKind::Identifier(name) => {
                     self.compile_expr(value)?;
                     self.emit(OpCode::Dump as u8, 0, span_to_pos(Some(value.span)));
-                    let slot = self.alloc_var(name);
+                    let Some(slot) = self.resolve_var(name) else {
+                        return Err(ScriptError::with_pos(
+                            format!("undefined variable {name}"),
+                            target.span.start,
+                        ));
+                    };
                     self.emit(
                         OpCode::StoreVar as u8,
                         slot as u32,
@@ -404,15 +431,30 @@ impl<'a> Compiler<'a> {
         idx
     }
 
-    fn alloc_var(&mut self, name: &str) -> usize {
-        if let Some(idx) = self.vars.get(name) {
-            *idx
-        } else {
-            let idx = self.vars.len();
-            self.vars.insert(name.to_string(), idx);
-            self.var_table_size = self.var_table_size.max(idx + 1);
-            idx
+    fn declare_var(&mut self, name: &str) -> usize {
+        let idx = self.var_table_size;
+        self.var_table_size += 1;
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), idx);
         }
+        idx
+    }
+
+    fn resolve_var(&self, name: &str) -> Option<usize> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(idx) = scope.get(name) {
+                return Some(*idx);
+            }
+        }
+        None
+    }
+
+    fn enter_scope(&mut self) {
+        self.scopes.push(indexmap::IndexMap::new());
+    }
+
+    fn exit_scope(&mut self) {
+        drop(self.scopes.pop());
     }
 
     fn emit(&mut self, opcode: u8, operand: u32, pos: u64) {

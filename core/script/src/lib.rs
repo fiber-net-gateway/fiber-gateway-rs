@@ -11,7 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 
-pub use crate::stdlib::Library;
+pub use crate::stdlib::{Directive, DirectiveFactory, Library};
 pub use crate::vm::{
     Instruction, InterpreterVm, InterpreterVmFuture, OpCode, VmAsyncConstant, VmAsyncConstantRef,
     VmAsyncFunction, VmAsyncFunctionRef, VmCallContext, VmConstant, VmConstantRef, VmError,
