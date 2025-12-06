@@ -44,6 +44,7 @@ pub struct Compiler<'a> {
     directives: indexmap::IndexMap<String, Rc<dyn crate::stdlib::Directive>>,
     scopes: Vec<indexmap::IndexMap<String, usize>>,
     loops: Vec<LoopCtx>,
+    exceptions: Vec<(u32, u32, u32)>,
 }
 
 #[derive(Debug, Default)]
@@ -67,6 +68,7 @@ impl<'a> Compiler<'a> {
             directives: indexmap::IndexMap::new(),
             scopes: vec![indexmap::IndexMap::new()],
             loops: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -84,7 +86,11 @@ impl<'a> Compiler<'a> {
             stack_size: self.stack_size,
             var_table_size: self.var_table_size,
             pos: self.pos,
-            exp_ins: Vec::new(),
+            exp_ins: self
+                .exceptions
+                .iter()
+                .flat_map(|(s, e, c)| [*s, *e, *c])
+                .collect(),
             has_async: self.has_async,
         })
     }
@@ -276,8 +282,33 @@ impl<'a> Compiler<'a> {
                 let end_target = self.codes.len() as u32;
                 self.codes[jmp_end_pos] |= end_target << 8;
             }
-            _ => {
-                // Other statements not yet compiled
+            StmtKind::TryCatch { body, err, catch } => {
+                let try_start = self.codes.len() as u32;
+                self.compile_stmt(&Stmt {
+                    span: body.span,
+                    kind: StmtKind::Block(body.clone()),
+                })?;
+
+                let jmp_end_pos = self.codes.len();
+                self.emit(OpCode::Jump as u8, 0, span_to_pos(Some(stmt.span)));
+
+                let catch_pc = self.codes.len() as u32;
+                self.exceptions.push((try_start, catch_pc, catch_pc));
+
+                self.enter_scope();
+                let err_slot = self.declare_var(err);
+                self.emit(
+                    OpCode::IntoCatch as u8,
+                    err_slot as u32,
+                    span_to_pos(Some(catch.span)),
+                );
+                for stmt in &catch.statements {
+                    self.compile_stmt(stmt)?;
+                }
+                self.exit_scope();
+
+                let end_pc = self.codes.len() as u32;
+                self.codes[jmp_end_pos] |= end_pc << 8;
             }
         }
         Ok(())

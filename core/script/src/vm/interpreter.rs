@@ -32,6 +32,7 @@ pub struct InterpreterVm<'attach> {
     call_args: Vec<JsValue>,
     pending_future: Option<VmFuture<'attach>>,
     pending_op: Option<PendingOp>,
+    pending_exception: Option<JsValue>,
 }
 
 impl Unpin for InterpreterVm<'_> {}
@@ -106,6 +107,7 @@ impl<'attach> InterpreterVm<'attach> {
             call_args: Vec::new(),
             pending_future: None,
             pending_op: None,
+            pending_exception: None,
         }
     }
 
@@ -336,7 +338,8 @@ impl<'attach> InterpreterVm<'attach> {
                 }
                 OpCode::IntoCatch => {
                     let idx = (instr.0 >> Self::INSTRUMENT_LEN) as usize;
-                    self.store_var(idx, self.exception_value());
+                    let exc = self.exception_value();
+                    self.store_var(idx, exc);
                 }
                 OpCode::Jump => {
                     self.pc = instr.operand_u24() as usize;
@@ -362,6 +365,7 @@ impl<'attach> InterpreterVm<'attach> {
                 OpCode::ThrowExp => {
                     let epc = self.pc.saturating_sub(1);
                     let error = self.pop().unwrap_or(JsValue::Undefined);
+                    self.pending_exception = Some(error.clone());
                     let err = VmError::from_js(error, self.pos.get(epc).cloned());
                     self.handle_error(err, epc);
                 }
@@ -411,8 +415,8 @@ impl<'attach> InterpreterVm<'attach> {
         match func.call(ctx) {
             Ok(val) => self.push(val),
             Err(err) => {
-                self.rt_error = Some(self.error_with_pos(err));
-                self.state = VmState::EndError;
+                let epc = self.pc.saturating_sub(1);
+                self.handle_error(self.error_with_pos(err), epc);
             }
         }
     }
@@ -462,8 +466,8 @@ impl<'attach> InterpreterVm<'attach> {
                 self.sp = self.stack.len();
             }
             Err(err) => {
-                self.rt_error = Some(self.error_with_pos(err));
-                self.state = VmState::EndError;
+                let epc = self.pc.saturating_sub(1);
+                self.handle_error(self.error_with_pos(err), epc);
             }
         }
     }
@@ -479,8 +483,8 @@ impl<'attach> InterpreterVm<'attach> {
         match constant.value(ctx) {
             Ok(val) => self.push(val),
             Err(err) => {
-                self.rt_error = Some(self.error_with_pos(err));
-                self.state = VmState::EndError;
+                let epc = self.pc.saturating_sub(1);
+                self.handle_error(self.error_with_pos(err), epc);
             }
         }
     }
@@ -761,7 +765,10 @@ impl<'attach> InterpreterVm<'attach> {
         }
     }
 
-    fn exception_value(&self) -> JsValue {
+    fn exception_value(&mut self) -> JsValue {
+        if let Some(exc) = self.pending_exception.take() {
+            return exc;
+        }
         if let Some(err) = &self.rt_error {
             JsValue::exception(err.message.clone(), err.position)
         } else {
@@ -802,7 +809,8 @@ impl<'attach> InterpreterVm<'attach> {
         self.rt_error = Some(err);
         self.stack.clear();
         self.sp = 0;
-        if let Some(cpc) = self.search_catch(epc) {
+        let catch_pc = self.search_catch(epc);
+        if let Some(cpc) = catch_pc {
             self.pc = cpc;
             self.state = VmState::Running;
         } else {
@@ -811,47 +819,28 @@ impl<'attach> InterpreterVm<'attach> {
     }
 
     fn search_catch(&self, epc: usize) -> Option<usize> {
-        let len = self.exp_ins.len() >> 1;
-        if len == 0 {
-            return None;
-        }
-        let first = self.exp_ins[0] as usize;
-        let last = self.exp_ins[len - 1] as usize;
-        if epc < first || epc >= last {
+        if self.exp_ins.is_empty() {
             return None;
         }
 
-        if len <= 8 {
-            for i in 1..len {
-                if self.exp_ins[i] as usize > epc {
-                    return Some(self.exp_ins[i - 1 + len] as usize);
+        let mut best: Option<(u32, u32, u32)> = None;
+        for chunk in self.exp_ins.chunks_exact(3) {
+            let (start, end, catch) = (chunk[0], chunk[1], chunk[2]);
+            if (start as usize) <= epc && (end as usize) > epc {
+                if best.map_or(true, |b| start >= b.0) {
+                    best = Some((start, end, catch));
                 }
             }
-            return Some(self.exp_ins[len - 1 + len] as usize);
         }
 
-        let (mut l, mut r) = (0usize, len);
-        while l < r {
-            let m = (l + r) >> 1;
-            let mv = self.exp_ins[m] as usize;
-            if epc < mv {
-                r = m;
-            } else if epc > mv {
-                l = m + 1;
-            } else {
-                return Some(self.exp_ins[m + len] as usize);
-            }
-        }
-        if l == 0 {
-            None
-        } else {
-            Some(self.exp_ins[l - 1 + len] as usize)
-        }
+        best.map(|(_, _, catch)| catch as usize)
     }
 
     fn poll_pending(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         let Some(mut fut) = self.pending_future.take() else {
-            self.state = VmState::Running;
+            if matches!(self.state, VmState::Pending) {
+                self.state = VmState::Running;
+            }
             return Poll::Ready(());
         };
 

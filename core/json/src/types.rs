@@ -240,7 +240,7 @@ impl JsIterator {
                     .collect();
                 Self::new(entries)
             }
-            other => Self::new(vec![(None, other)]),
+            _ => Self::new(Vec::new()),
         }
     }
 

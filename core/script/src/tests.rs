@@ -1,6 +1,7 @@
 use super::*;
 use crate::parse::compile::FunctionRef;
 use crate::stdlib::{Directive, DirectiveFactory};
+use crate::vm::VmError;
 use crate::vm::VmOperand;
 use fiber_json::JsValue;
 use std::pin::Pin;
@@ -509,6 +510,144 @@ fn for_of_respects_continue() {
 }
 
 #[test]
+fn try_catch_captures_thrown_value() {
+    let result = run(
+        "
+        let value = 0;
+        try {
+            value = 1;
+            throw 99;
+        } catch (err) {
+            return err;
+        }
+        return value;
+        ",
+        JsValue::Null,
+    );
+    assert_eq!(result, JsValue::Int(99));
+}
+
+#[test]
+fn try_catch_skips_when_no_error() {
+    let result = run(
+        "
+        let value = 1;
+        try {
+            value = value + 1;
+        } catch (err) {
+            value = value + 100;
+        }
+        return value;
+        ",
+        JsValue::Null,
+    );
+    assert_eq!(result, JsValue::Int(2));
+}
+
+#[test]
+fn try_catch_handles_function_error() {
+    let mut library = Library::empty();
+    library.register_function(None, "fail", |_ctx: VmCallContext<'_>| {
+        Err(VmError::new("boom", None))
+    });
+
+    let script = Script::compile_with(
+        "
+        try {
+            fail();
+        } catch (err) {
+            return err;
+        }
+        return 0;
+        ",
+        library,
+    )
+    .unwrap();
+
+    let result = script.block_exec(JsValue::Null, None).unwrap();
+    match result {
+        JsValue::Exception(exc) => assert_eq!(exc.message, "boom"),
+        other => panic!("expected exception, got {:?}", other),
+    }
+}
+
+fn run_async_script(script: Script) -> JsValue {
+    let mut vm = script.exec(JsValue::Null, None);
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = Pin::new(&mut vm).into_future();
+    loop {
+        match Pin::new(&mut fut).poll(&mut cx) {
+            std::task::Poll::Ready(res) => break res.unwrap(),
+            std::task::Poll::Pending => continue,
+        }
+    }
+}
+
+#[test]
+fn try_catch_handles_async_function_error() {
+    #[derive(Debug)]
+    struct FailingAsyncFunc;
+    #[async_trait::async_trait(?Send)]
+    impl VmAsyncFunction for FailingAsyncFunc {
+        async fn call(self: std::sync::Arc<Self>, _ctx: VmCallContext<'_>) -> VmResult {
+            Err(VmError::new("async_fail", None))
+        }
+    }
+
+    let mut library = Library::empty();
+    library.register_async_function(None, "afail", FailingAsyncFunc);
+
+    let script = Script::compile_with(
+        "
+        try {
+            afail();
+        } catch (err) {
+            return err;
+        }
+        return 0;
+        ",
+        library,
+    )
+    .unwrap();
+
+    let result = run_async_script(script);
+    match result {
+        JsValue::Exception(exc) => assert_eq!(exc.message, "async_fail"),
+        other => panic!("expected exception, got {:?}", other),
+    }
+}
+
+#[test]
+fn try_catch_handles_async_constant_error() {
+    let mut library = Library::empty();
+    library.register_async_const(
+        Some("env"),
+        "fail",
+        |_ctx: VmCallContext<'_>| async { Err(VmError::new("aconst_fail", None)) },
+    );
+
+    let script = Script::compile_with(
+        "
+        try {
+            return $env.fail;
+        } catch (err) {
+            return err;
+        }
+        return 0;
+        ",
+        library,
+    )
+    .unwrap();
+
+    let result = run_async_script(script);
+    match result {
+        JsValue::Exception(exc) => assert_eq!(exc.message, "aconst_fail"),
+        other => panic!("expected exception, got {:?}", other),
+    }
+}
+
+#[test]
 fn object_and_array_assignment() {
     let result = run(
         "
@@ -534,6 +673,90 @@ fn object_and_array_assignment() {
         )
         .unwrap()
     );
+}
+
+#[test]
+fn nested_try_catch_with_for_of() {
+    let result = run(
+        "
+        let nums = [1,2,3];
+        let sum = 0;
+        try {
+            for (let _, n of nums) {
+                try {
+                    if (n == 2) {
+                        throw 2;
+                    }
+                    if (n == 3) {
+                        throw 3;
+                    }
+                    sum = sum + n;
+                } catch (err) {
+                    sum = sum + err;
+                    if (err == 3) {
+                        throw err;
+                    }
+                }
+            }
+        } catch (outer) {
+            sum = sum - outer;
+        }
+        return sum;
+        ",
+        JsValue::Null,
+    );
+
+    // Flow:
+    // n=1 => sum=1
+    // n=2 => inner catch adds 2 => sum=3
+    // n=3 => inner catch adds 3 => sum=6, rethrows 3, outer catch subtracts 3 => 3
+    assert_eq!(result, JsValue::Int(3));
+}
+
+#[test]
+fn for_of_over_object_iterates_keys_and_values() {
+    let result = run(
+        "
+        let obj = {a:1, b:2, c:3};
+        let res = {};
+        for (let k, v of obj) {
+            res[k] = v * 2;
+        }
+        return res;
+        ",
+        JsValue::Null,
+    );
+
+    assert_eq!(
+        result,
+        fiber_json::parse(
+            r#"{
+                "a":2,
+                "b":4,
+                "c":6
+            }"#
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn for_of_non_container_skips_iteration() {
+    let result = run(
+        "
+        let sum = 0;
+        for (let v of 123) {
+            sum = sum + v;
+        }
+        for (let v of true) {
+            sum = sum + 1;
+        }
+        return sum;
+        ",
+        JsValue::Null,
+    );
+
+    assert_eq!(result, JsValue::Int(0));
 }
 
 #[test]
