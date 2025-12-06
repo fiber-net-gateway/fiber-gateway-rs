@@ -5,6 +5,7 @@ fn num(val: &JsValue) -> f64 {
     match val {
         JsValue::Int(v) => *v as f64,
         JsValue::Float(v) => *v,
+        JsValue::String(s) => s.to_std_string_lossy().parse::<f64>().unwrap_or(f64::NAN),
         JsValue::Bool(v) => {
             if *v {
                 1.0
@@ -22,16 +23,16 @@ fn strict_eq(a: &JsValue, b: &JsValue) -> bool {
 
 pub fn plus(a: JsValue, b: JsValue) -> JsValue {
     match (a, b) {
+        (JsValue::Int(a), JsValue::Int(b)) => JsValue::Int(a.saturating_add(b)),
         (JsValue::String(sa), JsValue::String(sb)) => JsValue::String(JsString::from(
             sa.to_std_string_lossy() + &sb.to_std_string_lossy(),
         )),
         (JsValue::String(sa), other) => JsValue::String(JsString::from(
-            sa.to_std_string_lossy() + &format!("{other:?}"),
+            sa.to_std_string_lossy() + &to_string_like_js(&other),
         )),
         (other, JsValue::String(sb)) => JsValue::String(JsString::from(
-            format!("{other:?}") + &sb.to_std_string_lossy(),
+            to_string_like_js(&other) + &sb.to_std_string_lossy(),
         )),
-        (JsValue::Int(a), JsValue::Int(b)) => JsValue::Int(a.saturating_add(b)),
         (left, right) => JsValue::Float(num(&left) + num(&right)),
     }
 }
@@ -55,7 +56,22 @@ pub fn divide(a: JsValue, b: JsValue) -> JsValue {
 }
 
 pub fn modulo(a: JsValue, b: JsValue) -> JsValue {
-    JsValue::Float(num(&a) % num(&b))
+    match (a, b) {
+        (JsValue::Int(a), JsValue::Int(b)) if b != 0 => JsValue::Int(a % b),
+        (left, right) => JsValue::Float(num(&left) % num(&right)),
+    }
+}
+
+fn to_string_like_js(val: &JsValue) -> String {
+    match val {
+        JsValue::String(s) => s.to_std_string_lossy(),
+        JsValue::Int(i) => i.to_string(),
+        JsValue::Float(f) => f.to_string(),
+        JsValue::Bool(b) => b.to_string(),
+        JsValue::Null => "null".to_string(),
+        JsValue::Undefined => "undefined".to_string(),
+        other => format!("{other:?}"),
+    }
 }
 
 pub fn lt(a: JsValue, b: JsValue) -> JsValue {

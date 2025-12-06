@@ -211,12 +211,16 @@ impl<'attach> InterpreterVm<'attach> {
                 }
                 OpCode::UnaryPlus => {
                     if let Some(val) = self.pop() {
-                        self.push(JsValue::Float(self.to_number(&val)));
+                        self.push(self.to_numeric(&val));
                     }
                 }
                 OpCode::UnaryMinus => {
                     if let Some(val) = self.pop() {
-                        self.push(JsValue::Float(-self.to_number(&val)));
+                        match self.to_numeric(&val) {
+                            JsValue::Int(i) => self.push(JsValue::Int(-i)),
+                            JsValue::Float(f) => self.push(JsValue::Float(-f)),
+                            other => self.push(other),
+                        }
                     }
                 }
                 OpCode::UnaryNeg => {
@@ -709,6 +713,7 @@ impl<'attach> InterpreterVm<'attach> {
         }
     }
 
+    #[allow(dead_code)]
     fn to_number(&self, val: &JsValue) -> f64 {
         match val {
             JsValue::Int(i) => *i as f64,
@@ -721,7 +726,23 @@ impl<'attach> InterpreterVm<'attach> {
                 }
             }
             JsValue::String(s) => s.to_std_string_lossy().parse::<f64>().unwrap_or(f64::NAN),
+            JsValue::Null => 0.0,
             _ => f64::NAN,
+        }
+    }
+
+    fn to_numeric(&self, val: &JsValue) -> JsValue {
+        match val {
+            JsValue::Int(i) => JsValue::Int(*i),
+            JsValue::Float(f) => JsValue::Float(*f),
+            JsValue::Bool(b) => JsValue::Int(if *b { 1 } else { 0 }),
+            JsValue::String(s) => s
+                .to_std_string_lossy()
+                .parse::<f64>()
+                .map(JsValue::Float)
+                .unwrap_or(JsValue::Float(f64::NAN)),
+            JsValue::Null => JsValue::Int(0),
+            _ => JsValue::Float(f64::NAN),
         }
     }
 

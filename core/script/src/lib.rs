@@ -5,8 +5,8 @@ mod stdlib;
 pub mod vm;
 
 use crate::error::ScriptError;
-use crate::parse::compile::{CompiledScript, Compiler};
 use crate::parse::Parser;
+use crate::parse::compile::{CompiledScript, Compiler};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, RawWaker, RawWakerVTable, Waker};

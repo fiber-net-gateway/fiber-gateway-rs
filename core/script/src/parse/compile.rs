@@ -94,7 +94,8 @@ impl<'a> Compiler<'a> {
                     if let Some(init) = &binding.init {
                         self.compile_expr(init)?;
                     } else {
-                        let idx = self.push_operand(VmOperand::Value(fiber_json::JsValue::Undefined));
+                        let idx =
+                            self.push_operand(VmOperand::Value(fiber_json::JsValue::Undefined));
                         self.emit(
                             OpCode::LoadConst as u8,
                             idx as u32,
@@ -104,7 +105,11 @@ impl<'a> Compiler<'a> {
                     // store_var pops the value; duplicate so the assigned value
                     // remains on the stack for potential chained lets.
                     self.emit(OpCode::Dump as u8, 0, span_to_pos(Some(binding.span)));
-                    self.emit(OpCode::StoreVar as u8, slot as u32, span_to_pos(Some(binding.span)));
+                    self.emit(
+                        OpCode::StoreVar as u8,
+                        slot as u32,
+                        span_to_pos(Some(binding.span)),
+                    );
                     self.emit(OpCode::Pop as u8, 0, span_to_pos(Some(binding.span)));
                 }
             }
@@ -332,37 +337,43 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
-            ExprKind::Assign { target, value } => {
-                match &target.kind {
-                    ExprKind::Identifier(name) => {
-                        self.compile_expr(value)?;
-                        self.emit(OpCode::Dump as u8, 0, span_to_pos(Some(value.span)));
-                        let slot = self.alloc_var(name);
-                        self.emit(OpCode::StoreVar as u8, slot as u32, span_to_pos(Some(target.span)));
-                    }
-                    ExprKind::Member { object, property } => {
-                        self.compile_expr(object)?;
-                        match property {
-                            MemberExpr::Named(name, span) => {
-                                self.compile_expr(value)?;
-                                let key_idx = self.push_operand(VmOperand::Text(name.clone()));
-                                self.emit(OpCode::PropSet as u8, key_idx as u32, span_to_pos(Some(*span)));
-                            }
-                            MemberExpr::Computed(expr) => {
-                                self.compile_expr(expr)?;
-                                self.compile_expr(value)?;
-                                self.emit(OpCode::IdxSet as u8, 0, span_to_pos(Some(value.span)));
-                            }
+            ExprKind::Assign { target, value } => match &target.kind {
+                ExprKind::Identifier(name) => {
+                    self.compile_expr(value)?;
+                    self.emit(OpCode::Dump as u8, 0, span_to_pos(Some(value.span)));
+                    let slot = self.alloc_var(name);
+                    self.emit(
+                        OpCode::StoreVar as u8,
+                        slot as u32,
+                        span_to_pos(Some(target.span)),
+                    );
+                }
+                ExprKind::Member { object, property } => {
+                    self.compile_expr(object)?;
+                    match property {
+                        MemberExpr::Named(name, span) => {
+                            self.compile_expr(value)?;
+                            let key_idx = self.push_operand(VmOperand::Text(name.clone()));
+                            self.emit(
+                                OpCode::PropSet as u8,
+                                key_idx as u32,
+                                span_to_pos(Some(*span)),
+                            );
+                        }
+                        MemberExpr::Computed(expr) => {
+                            self.compile_expr(expr)?;
+                            self.compile_expr(value)?;
+                            self.emit(OpCode::IdxSet as u8, 0, span_to_pos(Some(value.span)));
                         }
                     }
-                    _ => {
-                        return Err(ScriptError::with_pos(
-                            "invalid assignment target",
-                            target.span.start,
-                        ));
-                    }
                 }
-            }
+                _ => {
+                    return Err(ScriptError::with_pos(
+                        "invalid assignment target",
+                        target.span.start,
+                    ));
+                }
+            },
             ExprKind::Conditional {
                 cond,
                 then_branch,

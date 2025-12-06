@@ -298,9 +298,13 @@ impl Parser {
     fn parse_expression(&mut self, min_bp: u8) -> Result<Expr, ScriptError> {
         let mut lhs = self.parse_unary()?;
 
+        const COND_BP: u8 = 2; // conditional has low precedence, above assignment.
         loop {
             let op = match self.peek().kind.clone() {
                 TokenKind::Question => {
+                    if COND_BP < min_bp {
+                        break;
+                    }
                     self.bump();
                     let then_branch = self.parse_expression(0)?;
                     self.consume(&TokenKind::Colon)?;

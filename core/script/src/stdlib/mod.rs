@@ -46,12 +46,7 @@ impl Library {
         self.insert_function(namespace, name, VmOperand::AsyncFunction(Arc::new(func)));
     }
 
-    fn insert_function(
-        &mut self,
-        namespace: Option<&str>,
-        name: &str,
-        operand: VmOperand,
-    ) {
+    fn insert_function(&mut self, namespace: Option<&str>, name: &str, operand: VmOperand) {
         let key = match namespace {
             Some(ns) => format!("{ns}.{name}"),
             None => name.to_string(),
@@ -68,12 +63,8 @@ impl Library {
         self.insert_const(namespace, name, VmOperand::Constant(Arc::new(constant)));
     }
 
-    pub fn register_async_const<C>(
-        &mut self,
-        namespace: Option<&str>,
-        name: &str,
-        constant: C,
-    ) where
+    pub fn register_async_const<C>(&mut self, namespace: Option<&str>, name: &str, constant: C)
+    where
         C: VmAsyncConstant + 'static,
     {
         self.insert_const(
@@ -83,12 +74,7 @@ impl Library {
         );
     }
 
-    fn insert_const(
-        &mut self,
-        namespace: Option<&str>,
-        name: &str,
-        operand: VmOperand,
-    ) {
+    fn insert_const(&mut self, namespace: Option<&str>, name: &str, operand: VmOperand) {
         let key = match namespace {
             Some(ns) => format!("{ns}.{name}"),
             None => name.to_string(),
@@ -101,9 +87,7 @@ impl Library {
         self.directives.push(directive);
     }
 
-    fn register_stdlib(&mut self) {
-
-    }
+    fn register_stdlib(&mut self) {}
 }
 
 impl Default for Library {
