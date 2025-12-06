@@ -453,6 +453,62 @@ fn inner_scope_variable_not_visible_outside() {
 }
 
 #[test]
+fn if_else_executes_correct_branch() {
+    let result = run(
+        "
+        let flag = false;
+        let val;
+        if (flag) {
+            val = 1;
+        } else {
+            val = 2;
+        }
+        return val;
+        ",
+        JsValue::Null,
+    );
+    assert_eq!(result, JsValue::Int(2));
+}
+
+#[test]
+fn for_of_iterates_array_and_breaks() {
+    let result = run(
+        "
+        let arr = [1,2,3,4];
+        let sum = 0;
+        for (let idx, item of arr) {
+            if (item > 3) {
+                break;
+            }
+            sum = sum + item;
+        }
+        return sum;
+        ",
+        JsValue::Null,
+    );
+    assert_eq!(result, JsValue::Int(6));
+}
+
+#[test]
+fn for_of_respects_continue() {
+    let result = run(
+        "
+        let arr = [1,2,3,4,5];
+        let sum = 0;
+        for (let _, item of arr) {
+            if (item % 2 == 0) {
+                continue;
+            }
+            sum = sum + item;
+        }
+        return sum;
+        ",
+        JsValue::Null,
+    );
+    assert_eq!(result, JsValue::Int(9));
+}
+
+#[test]
 fn object_and_array_assignment() {
     let result = run(
         "

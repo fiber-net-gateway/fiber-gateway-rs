@@ -1,6 +1,6 @@
 use crate::error::ScriptError;
 use crate::parse::ast::*;
-use crate::vm::{OpCode, VmOperand};
+use crate::vm::{InterpreterVm, OpCode, VmOperand};
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -43,6 +43,15 @@ pub struct Compiler<'a> {
     var_table_size: usize,
     directives: indexmap::IndexMap<String, Rc<dyn crate::stdlib::Directive>>,
     scopes: Vec<indexmap::IndexMap<String, usize>>,
+    loops: Vec<LoopCtx>,
+}
+
+#[derive(Debug, Default)]
+struct LoopCtx {
+    #[allow(dead_code)]
+    start: u32,
+    breaks: Vec<usize>,
+    continues: Vec<usize>,
 }
 
 impl<'a> Compiler<'a> {
@@ -57,6 +66,7 @@ impl<'a> Compiler<'a> {
             var_table_size: 0,
             directives: indexmap::IndexMap::new(),
             scopes: vec![indexmap::IndexMap::new()],
+            loops: Vec::new(),
         }
     }
 
@@ -122,6 +132,70 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(expr)?;
                 self.emit(OpCode::Pop as u8, 0, span_to_pos(Some(expr.span)));
             }
+            StmtKind::ForOf {
+                key,
+                value,
+                iter,
+                body,
+            } => {
+                self.compile_expr(iter)?;
+                // Reserve slots for iterator, key, and value in the current scope.
+                let iter_slot = self.declare_var(&format!("__iter{}", self.var_table_size));
+                self.emit(
+                    OpCode::IterateInto as u8,
+                    iter_slot as u32,
+                    span_to_pos(Some(iter.span)),
+                );
+
+                let loop_start = self.codes.len() as u32;
+                self.emit(
+                    OpCode::IterateNext as u8,
+                    iter_slot as u32,
+                    span_to_pos(Some(iter.span)),
+                );
+                let jmp_exit_pos = self.codes.len();
+                self.emit(OpCode::JumpIfFalse as u8, 0, span_to_pos(Some(iter.span)));
+
+                self.loops.push(LoopCtx {
+                    start: loop_start,
+                    breaks: Vec::new(),
+                    continues: Vec::new(),
+                });
+
+                if let Some(k) = key {
+                    let key_slot = self.declare_var(k);
+                    let operand =
+                        ((iter_slot as u32) << InterpreterVm::ITERATOR_LEN) | (key_slot as u32);
+                    let raw = (OpCode::IterateKey as u8 as u32)
+                        | (operand << InterpreterVm::INSTRUMENT_LEN);
+                    self.emit_raw(raw, span_to_pos(Some(iter.span)));
+                }
+
+                let val_slot = self.declare_var(value);
+                let operand =
+                    ((iter_slot as u32) << InterpreterVm::ITERATOR_LEN) | (val_slot as u32);
+                let raw = (OpCode::IterateValue as u8 as u32)
+                    | (operand << InterpreterVm::INSTRUMENT_LEN);
+                self.emit_raw(raw, span_to_pos(Some(iter.span)));
+
+                self.compile_stmt(&Stmt {
+                    span: body.span,
+                    kind: StmtKind::Block(body.clone()),
+                })?;
+
+                self.emit(OpCode::Jump as u8, loop_start, span_to_pos(Some(body.span)));
+                let loop_end = self.codes.len() as u32;
+                self.codes[jmp_exit_pos] |= loop_end << 8;
+
+                if let Some(mut ctx) = self.loops.pop() {
+                    for pos in ctx.continues.drain(..) {
+                        self.codes[pos] |= loop_start << 8;
+                    }
+                    for pos in ctx.breaks.drain(..) {
+                        self.codes[pos] |= loop_end << 8;
+                    }
+                }
+            }
             StmtKind::Return(Some(expr)) => {
                 self.compile_expr(expr)?;
                 self.emit(OpCode::EndReturn as u8, 0, span_to_pos(Some(stmt.span)));
@@ -132,6 +206,30 @@ impl<'a> Compiler<'a> {
             StmtKind::Throw(expr) => {
                 self.compile_expr(expr)?;
                 self.emit(OpCode::ThrowExp as u8, 0, span_to_pos(Some(stmt.span)));
+            }
+            StmtKind::Break => {
+                if self.loops.is_empty() {
+                    return Err(ScriptError::with_pos(
+                        "break outside of loop",
+                        stmt.span.start,
+                    ));
+                }
+                let loop_idx = self.loops.len() - 1;
+                let pos = self.codes.len();
+                self.emit(OpCode::Jump as u8, 0, span_to_pos(Some(stmt.span)));
+                self.loops[loop_idx].breaks.push(pos);
+            }
+            StmtKind::Continue => {
+                if self.loops.is_empty() {
+                    return Err(ScriptError::with_pos(
+                        "continue outside of loop",
+                        stmt.span.start,
+                    ));
+                }
+                let loop_idx = self.loops.len() - 1;
+                let pos = self.codes.len();
+                self.emit(OpCode::Jump as u8, 0, span_to_pos(Some(stmt.span)));
+                self.loops[loop_idx].continues.push(pos);
             }
             StmtKind::Directive { name, ty, literal } => {
                 let Some(handler) = self.library.resolve_directive_type(ty) else {
