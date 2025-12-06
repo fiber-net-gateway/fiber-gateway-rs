@@ -838,6 +838,89 @@ fn object_creation_with_computed_and_spread() {
 }
 
 #[test]
+fn object_property_access_returns_undefined_when_missing() {
+    let result = run(
+        r#"
+        let obj = {a: 1, "b": 2};
+        let key = "a";
+        let missing = obj.c;
+        let computed = obj[key];
+        let bracket = obj["b"];
+        let n = null;
+        let from_null = n.prop;
+        let u;
+        let from_undefined = u.any;
+        let arr = [{z: 9}];
+        let nested = arr[0].z;
+        return {dot: obj.a, bracket, computed, missing, from_null, from_undefined, nested};
+        "#,
+        JsValue::Null,
+    );
+
+    use fiber_string::JsString;
+    use indexmap::IndexMap;
+
+    let mut map = IndexMap::new();
+    map.insert(JsString::from("dot"), JsValue::Int(1));
+    map.insert(JsString::from("bracket"), JsValue::Int(2));
+    map.insert(JsString::from("computed"), JsValue::Int(1));
+    map.insert(JsString::from("missing"), JsValue::Undefined);
+    map.insert(JsString::from("from_null"), JsValue::Undefined);
+    map.insert(JsString::from("from_undefined"), JsValue::Undefined);
+    map.insert(JsString::from("nested"), JsValue::Int(9));
+    let expected = JsValue::Object(fiber_json::JsObject::new(map));
+
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn object_property_assignment_various_forms() {
+    let result = run(
+        r#"
+        let obj = {};
+        obj.a = 1;
+        obj["b"] = 2;
+        let key = "c";
+        obj[key] = 3;
+
+        let holder = {inner: {}};
+        holder.inner["e"] = 9;
+
+        let arr = [0];
+        arr[1] = 5;
+        arr[3] = 7; // out of bounds insert should be ignored
+
+        let n = null;
+        n.prop = 1;
+        let u;
+        u.field = 2;
+
+        return {obj, arr, inner: holder.inner, n, u};
+        "#,
+        JsValue::Null,
+    );
+
+    use fiber_string::JsString;
+    use indexmap::IndexMap;
+
+    let obj_expected = fiber_json::parse(r#"{"a":1,"b":2,"c":3}"#).unwrap();
+    let inner_expected = fiber_json::parse(r#"{"e":9}"#).unwrap();
+
+    let mut map = IndexMap::new();
+    map.insert(JsString::from("obj"), obj_expected);
+    map.insert(
+        JsString::from("arr"),
+        JsValue::array(vec![JsValue::Int(0), JsValue::Int(5)]),
+    );
+    map.insert(JsString::from("inner"), inner_expected);
+    map.insert(JsString::from("n"), JsValue::Null);
+    map.insert(JsString::from("u"), JsValue::Undefined);
+    let expected = JsValue::Object(fiber_json::JsObject::new(map));
+
+    assert_eq!(result, expected);
+}
+
+#[test]
 fn nested_try_catch_with_for_of() {
     let result = run(
         "
